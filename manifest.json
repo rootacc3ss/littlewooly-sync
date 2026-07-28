@@ -1,0 +1,10 @@
+{
+  "id": "littlewooly-sync",
+  "name": "Little Wooly Sync",
+  "version": "0.1.0",
+  "minAppVersion": "1.7.2",
+  "description": "Real-time, end-to-end encrypted backup of ALL files in your vault to any S3-compatible bucket. Provable coverage, no silent caps.",
+  "author": "Little Wooly",
+  "authorUrl": "https://github.com/rootacc3ss/littlewooly-sync",
+  "isDesktopOnly": true
+}

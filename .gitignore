@@ -1,0 +1,27 @@
+# dependencies
+node_modules/
+
+# build output
+main.js
+main.js.map
+dist/
+
+# secrets & local config — NEVER commit
+.env
+.env.*
+.test.env
+*.local
+
+# test artifacts
+coverage/
+.minio-data/
+
+# vault test fixtures with real data
+test/.vault-*/
+
+# editor / OS
+.DS_Store
+*.log
+
+# local-only reference material — study it, never ship it
+archive/
