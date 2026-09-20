@@ -1,10 +1,13 @@
 // ObjectBackend over S3, built for "any S3-compatible provider".
 //
-// Uses the Node HTTP handler (desktop-only) so requests bypass the Electron renderer's
-// fetch/CORS path that breaks iDrive e2 / Filebase / Mega S4 / self-hosted MinIO. Supports
-// path-style vs virtual-hosted addressing, custom request headers (auth proxies), S3
-// conditional create (If-None-Match) for immutable objects + manifest CAS, and a
-// testConnection() sanity check.
+// Uses Obsidian's requestUrl via ObsHttpHandler so requests bypass the renderer's
+// fetch/CORS path (which breaks iDrive e2 / Filebase / Mega S4 / self-hosted MinIO) on
+// BOTH desktop and mobile. Supports path-style vs virtual-hosted addressing, custom
+// request headers (auth proxies), S3 conditional create (If-None-Match) for immutable
+// objects + manifest CAS, and a testConnection() sanity check.
+//
+// Flexible checksums are pinned to WHEN_REQUIRED: the SDK's newer default (WHEN_SUPPORTED)
+// attaches aws-chunked + CRC32 that several S3-compatible stores reject.
 
 import {
   S3Client,
@@ -14,8 +17,8 @@ import {
   ListObjectsV2Command,
   DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
-import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { ObjectBackend, ObjectInfo, PutOptions, PreconditionFailedError } from "./backend";
+import { ObsHttpHandler } from "./obs-http-handler";
 import type { S3Config } from "../types";
 
 function statusOf(e: unknown): number | undefined {
@@ -37,7 +40,9 @@ export class S3Backend implements ObjectBackend {
       region: cfg.region || "us-east-1",
       forcePathStyle: cfg.forcePathStyle,
       credentials: { accessKeyId: cfg.accessKeyId, secretAccessKey: cfg.secretAccessKey },
-      requestHandler: new NodeHttpHandler(),
+      requestHandler: new ObsHttpHandler(),
+      requestChecksumCalculation: "WHEN_REQUIRED",
+      responseChecksumValidation: "WHEN_REQUIRED",
     });
 
     if (cfg.customHeaders && Object.keys(cfg.customHeaders).length > 0) {
@@ -124,10 +129,9 @@ export class S3Backend implements ObjectBackend {
   /**
    * Probe whether the backend honors conditional create (If-None-Match: *). Some
    * S3-compatible stores silently ignore it; the manifest CAS degrades gracefully when
-   * this returns false, but we warn the user.
+   * this returns false, but we warn the user. Always deletes the probe key afterwards.
    */
-  async probeConditionalPut(): Promise<boolean> {
-    const key = "meta/.lws-cas-probe";
+  async probeConditionalPut(key = "meta/.lws-cas-probe"): Promise<boolean> {
     const body = new Uint8Array([1]);
     await this.put(key, body); // ensure it exists
     try {

@@ -6,12 +6,12 @@
 // remote delete soft-deletes locally (trash); divergent edits never lose data (conflict copy).
 
 import type { VaultFS } from "./vault-fs";
-import type { LocalIndex } from "./local-index";
+import type { LocalIndex, IndexRecord } from "./local-index";
 import { ObjectStore } from "../store/object-store";
 import { ManifestStore, type ConflictInfo } from "../store/manifest-store";
 import { sha256, toHex } from "../crypto/object-cipher";
 import { softDelete } from "./trash";
-import { conflictCopyName } from "./conflict-resolver";
+import { conflictCopyName, isJsonPath, mergeJson3 } from "./conflict-resolver";
 import type { Manifest, HistoryRecord, ManifestEntry } from "../types";
 
 export interface SyncResult {
@@ -19,6 +19,8 @@ export interface SyncResult {
   downloaded: number;
   deletedLocal: number;
   conflictCopies: string[];
+  /** Paths where divergent JSON edits were auto-merged (3-way) instead of conflict-copied. */
+  mergedJson: string[];
   conflicts: ConflictInfo[];
 }
 
@@ -45,6 +47,7 @@ export class SyncEngine {
       downloaded: 0,
       deletedLocal: 0,
       conflictCopies: [],
+      mergedJson: [],
       conflicts: [],
     };
     await this.pull(result);
@@ -94,20 +97,63 @@ export class SyncEngine {
       }
 
       const unchangedSinceSync = local && onDiskHash === local.contentHash;
-      if (onDisk && !unchangedSinceSync && local && local.contentHash !== head.contentHash) {
-        // local diverged AND remote changed -> preserve local as a conflict copy.
-        const copy = conflictCopyName(path, head.author, this.now());
-        await this.fs.write(copy, onDisk);
-        result.conflictCopies.push(copy);
-      }
 
       const data = await this.objects.getFile({
         objectKey: head.objectKey,
         isRecipe: head.isRecipe,
       });
+
+      if (onDisk && !unchangedSinceSync && local && local.contentHash !== head.contentHash) {
+        // Local diverged AND remote changed. Structured JSON gets a 3-way merge attempt
+        // first (base = the last-synced local version); anything else — or a merge that
+        // hits a true same-key conflict — preserves the local edit as a conflict copy.
+        const merged = await this.tryMergeJson(path, local, onDisk, data);
+        if (merged) {
+          await this.fs.write(path, merged);
+          result.mergedJson.push(path);
+          // The index keeps pointing at the pre-merge local version, so push() will
+          // upload the merged content as a new version of this path. Nothing is lost.
+          continue;
+        }
+        const copy = conflictCopyName(path, head.author, this.now());
+        await this.fs.write(copy, onDisk);
+        result.conflictCopies.push(copy);
+      }
+
       await this.fs.write(path, data);
       await this.markClean(path, head, data.length);
       result.downloaded++;
+    }
+  }
+
+  /**
+   * Attempt a 3-way JSON merge of a divergent pull. Base = the last-synced local version
+   * (content-addressed, so its object is guaranteed fetchable). Returns null — meaning
+   * "fall back to conflict copy" — for non-JSON paths, a missing/deleted base, unparseable
+   * JSON, or a true same-key conflict.
+   */
+  private async tryMergeJson(
+    path: string,
+    local: IndexRecord | undefined,
+    mine: Uint8Array,
+    theirs: Uint8Array,
+  ): Promise<Uint8Array | null> {
+    if (!local || local.deleted || !local.objectKey || !isJsonPath(path)) return null;
+    try {
+      const base = await this.objects.getFile({
+        objectKey: local.objectKey,
+        isRecipe: local.isRecipe,
+      });
+      const dec = new TextDecoder();
+      const merged = mergeJson3(
+        JSON.parse(dec.decode(base)),
+        JSON.parse(dec.decode(mine)),
+        JSON.parse(dec.decode(theirs)),
+      );
+      if (!merged) return null;
+      return new TextEncoder().encode(JSON.stringify(merged, null, 2));
+    } catch {
+      return null;
     }
   }
 
@@ -120,7 +166,7 @@ export class SyncEngine {
       paths: structuredClone(prev.paths),
     };
 
-    const entries = (await this.fs.walk()).filter((e) => SHARED_TIERS.has(e.tier));
+    const entries = (await this.fs.walk()).entries.filter((e) => SHARED_TIERS.has(e.tier));
     const present = new Set(entries.map((e) => e.path));
 
     for (const e of entries) {

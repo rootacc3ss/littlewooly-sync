@@ -61,4 +61,58 @@ describe("auditCoverage", () => {
     );
     expect(r.findings.TOMBSTONE_RESURRECTED).toContain("a.md");
   });
+
+  test("a recipe head with a missing chunk is MISSING_OBJECT", () => {
+    const r = auditCoverage(
+      inputs({
+        heads: {
+          "big.bin": {
+            contentHash: "hb",
+            objectKey: "recipe1",
+            deleted: false,
+            size: 999,
+            isRecipe: true,
+            chunkKeys: ["c1", "c2", "c3"],
+          },
+        },
+        bucketObjectKeys: new Set(["recipe1", "c1", "c3"]),
+      }),
+    );
+    expect(r.findings.MISSING_OBJECT.some((x) => x.startsWith("big.bin"))).toBe(true);
+    expect(r.findings.MISSING_OBJECT.some((x) => x.includes("1 chunk"))).toBe(true);
+  });
+
+  test("bucket objects not referenced by the manifest (incl. chunks) are ORPHAN_OBJECT", () => {
+    const r = auditCoverage(
+      inputs({
+        heads: {
+          "big.bin": {
+            contentHash: "hb",
+            objectKey: "recipe1",
+            deleted: false,
+            size: 999,
+            isRecipe: true,
+            chunkKeys: ["c1"],
+          },
+        },
+        bucketObjectKeys: new Set(["recipe1", "c1", "orphan1", "orphan2"]),
+        referencedObjectKeys: new Set(["recipe1", "c1"]),
+      }),
+    );
+    expect(r.findings.ORPHAN_OBJECT).toEqual(["orphan1", "orphan2"]);
+  });
+
+  test("without referencedObjectKeys, orphan detection is skipped (no false positives)", () => {
+    const r = auditCoverage(
+      inputs({ bucketObjectKeys: new Set(["ka", "unreferenced"]) }),
+    );
+    expect(r.findings.ORPHAN_OBJECT).toEqual([]);
+  });
+
+  test("excluded roster items are surfaced in the report", () => {
+    const r = auditCoverage(
+      inputs({ roster: [{ path: ".git/", reason: "excluded by rule: .git/**" }] }),
+    );
+    expect(r.excluded).toEqual([{ path: ".git/", reason: "excluded by rule: .git/**" }]);
+  });
 });

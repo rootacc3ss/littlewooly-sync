@@ -82,6 +82,17 @@ export class ObjectStore {
     return decryptObject(this.keys.encKey, blob);
   }
 
+  /**
+   * Chunk keys of a recipe object, without assembling the file. Used by deep coverage
+   * audits to verify every chunk's presence and to make orphan detection accurate.
+   * Throws if the recipe is missing or fails authentication (corruption is never silent).
+   */
+  async getRecipeChunkKeys(recipeKey: string): Promise<string[]> {
+    const top = await this.getBlob(recipeKey);
+    const recipe = JSON.parse(new TextDecoder().decode(top)) as RecipeBody;
+    return recipe.chunks.map((c) => c.objectKey);
+  }
+
   async getFile(ref: { objectKey: string; isRecipe: boolean }): Promise<Uint8Array> {
     const top = await this.getBlob(ref.objectKey);
     if (!ref.isRecipe) return top;

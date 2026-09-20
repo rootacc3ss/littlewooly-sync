@@ -23,6 +23,13 @@ export interface HeadEntry {
   objectKey: string;
   deleted: boolean;
   size: number;
+  /** set when the head points at a recipe object (chunked file). */
+  isRecipe?: boolean;
+  /**
+   * Chunk object keys of a recipe head, resolved (fetch + decrypt) by the service during
+   * a deep audit. When present, every chunk's presence in the bucket is verified.
+   */
+  chunkKeys?: string[];
 }
 
 export interface AuditInputs {
@@ -38,6 +45,11 @@ export interface AuditInputs {
    * chunked files whose chunk keys aren't in `heads`).
    */
   referencedObjectKeys?: Set<string>;
+  /**
+   * The walker roster: items excluded from coverage, each with its reason. Passed through
+   * to the report so "nothing is dropped silently" is user-visible, not just internal.
+   */
+  roster?: { path: string; reason: string }[];
 }
 
 export interface AuditReport {
@@ -47,6 +59,8 @@ export interface AuditReport {
   storedBytes: number;
   ratio: number;
   verdict: string;
+  /** Items excluded from coverage, with reasons (from the walker roster). */
+  excluded: { path: string; reason: string }[];
 }
 
 const EMPTY = (): Record<AuditBucket, string[]> => ({
@@ -82,6 +96,10 @@ export function auditCoverage(input: AuditInputs): AuditReport {
     if (head.deleted) continue;
     plaintextBytes += head.size;
     if (!input.bucketObjectKeys.has(head.objectKey)) f.MISSING_OBJECT.push(path);
+    if (head.chunkKeys) {
+      const missing = head.chunkKeys.filter((ck) => !input.bucketObjectKeys.has(ck)).length;
+      if (missing > 0) f.MISSING_OBJECT.push(`${path} (${missing} chunk${missing > 1 ? "s" : ""})`);
+    }
     if (!liveByPath.has(path)) f.MISSING_LOCALLY.push(path);
   }
 
@@ -108,5 +126,6 @@ export function auditCoverage(input: AuditInputs): AuditReport {
     storedBytes: input.storedBytes,
     ratio,
     verdict,
+    excluded: input.roster ?? [],
   };
 }

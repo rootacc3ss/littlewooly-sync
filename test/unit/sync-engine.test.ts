@@ -15,14 +15,17 @@ import {
 } from "../../src/crypto/keys";
 
 // One shared "bucket" (MemoryBackend); two devices each with their own vault + index.
+// All devices share ONE monotonic clock so mtimes are comparable across devices — the
+// manifest fold (LWW by mtime, then ts) depends on that, like real filesystem mtimes.
 let bucket: MemoryBackend;
 let subkeys: Subkeys;
 let clock: number;
-const now = () => ++clock;
+const tick = () => ++clock;
+const now = tick;
 
 function device(name: string) {
   const opts = makeClassifyOptions(defaultVaultConfig("v", name), "littlewooly-sync");
-  const fs = new MemoryVaultFS(opts);
+  const fs = new MemoryVaultFS(opts, tick);
   const objects = new ObjectStore(bucket, subkeys);
   const manifests = new ManifestStore(bucket, subkeys.manifestKey);
   const index = new LocalIndex(new InMemoryIndexBackend());
@@ -94,5 +97,51 @@ describe("SyncEngine shared sync", () => {
     await b.engine.sync();
     expect(await b.fs.exists("Notes/shared.md")).toBe(true); // shared content arrives
     expect(await b.fs.exists(".obsidian/workspace.json")).toBe(false); // device config does NOT
+  });
+
+  test("divergent JSON edits on different keys auto-merge 3-way (no conflict copy)", async () => {
+    const a = device("desktop");
+    const b = device("mobile");
+    const base = JSON.stringify({ a: 1, b: 2 });
+    a.fs.set("data.json", base, 100);
+    await a.engine.sync();
+    await b.engine.sync(); // both have base
+
+    a.fs.set("data.json", JSON.stringify({ a: 10, b: 2 }), tick());
+    b.fs.set("data.json", JSON.stringify({ a: 1, b: 20 }), tick());
+    await a.engine.sync(); // A pushes {a:10}
+    const bResult = await b.engine.sync(); // B pulls; local diverged -> merge
+
+    expect(bResult.mergedJson).toContain("data.json");
+    expect(bResult.conflictCopies).toEqual([]);
+    expect(JSON.parse(new TextDecoder().decode(await b.fs.read("data.json")))).toEqual({
+      a: 10,
+      b: 20,
+    });
+    // The merged content is pushed up as a new version, so A converges to it too.
+    await a.engine.sync();
+    expect(JSON.parse(new TextDecoder().decode(await a.fs.read("data.json")))).toEqual({
+      a: 10,
+      b: 20,
+    });
+  });
+
+  test("divergent JSON edits on the SAME key are a true conflict -> conflict copy", async () => {
+    const a = device("desktop");
+    const b = device("mobile");
+    a.fs.set("data.json", JSON.stringify({ k: 1 }), 100);
+    await a.engine.sync();
+    await b.engine.sync();
+
+    a.fs.set("data.json", JSON.stringify({ k: 100 }), tick());
+    b.fs.set("data.json", JSON.stringify({ k: 200 }), tick());
+    await a.engine.sync();
+    const bResult = await b.engine.sync();
+
+    expect(bResult.mergedJson).toEqual([]);
+    expect(bResult.conflictCopies.length).toBe(1);
+    const copy = [...b.fs.files.keys()].find((p) => p.includes("conflict copy"));
+    expect(copy).toBeTruthy();
+    expect(JSON.parse(new TextDecoder().decode(await b.fs.read(copy!)))).toEqual({ k: 200 });
   });
 });

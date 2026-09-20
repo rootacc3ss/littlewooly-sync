@@ -37,8 +37,9 @@ Download `main.js`, `manifest.json`, and `styles.css` from the
 [latest release](https://github.com/rootacc3ss/littlewooly-sync/releases) into
 `<vault>/.obsidian/plugins/littlewooly-sync/`, then enable the plugin.
 
-Desktop only — the plugin uses Node APIs and the S3 SDK's Node HTTP handler so it can read
-every file on disk and reach your bucket without CORS restrictions.
+Desktop **and mobile** (iOS/Android) — the plugin talks to your bucket through Obsidian's
+`requestUrl` (no CORS restrictions on either platform) and enumerates the vault through the
+vault adapter, so it reads every file — hidden files included — with no Node APIs.
 
 ## Setup
 
@@ -48,7 +49,7 @@ Enabling the plugin opens a one-screen wizard:
 | --- | --- |
 | **Endpoint** | Your provider's S3 endpoint |
 | **Region** | e.g. `us-east-1`, or `auto` for Cloudflare R2 |
-| **Access key ID** / **Secret access key** | Stored locally, never uploaded |
+| **Access key ID** / **Secret access key** | Stored in Obsidian's OS-backed secret storage (not in plaintext `data.json`), never uploaded |
 | **Bucket** | Must already exist |
 | **Addressing** | Path-style (`host/bucket/…`) or virtual-hosted (`bucket.host/…`) |
 | **Vault name** | Data lives under `lwsync/<vault name>/`, so one bucket can hold many vaults |

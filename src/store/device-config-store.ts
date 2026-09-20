@@ -29,7 +29,7 @@ export class DeviceConfigStore {
   async backup(fs: VaultFS, device: string): Promise<number> {
     const store = this.objectsFor(device);
     const manifest: DeviceManifest = {};
-    for (const e of await fs.walk()) {
+    for (const e of (await fs.walk()).entries) {
       if (e.tier !== "DEVICE_CONFIG") continue;
       manifest[e.path] = await store.putFile(await fs.read(e.path));
     }

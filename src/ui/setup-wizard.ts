@@ -2,8 +2,10 @@
 // in the bucket: new vault -> set passphrase; existing -> verify passphrase + choose restore
 // (everything vs content-only). Far slimmer than the reference's 8-screen wizard.
 
-import { App, Modal, Notice, Setting } from "obsidian";
+import { App, Modal, Notice, Platform, Setting } from "obsidian";
 import type { Controller, LwsSettings } from "../controller";
+import { readS3Secret, writeS3Secret } from "../secrets";
+import { formatHeaderLines, parseHeaderLines } from "./custom-headers";
 
 const PRESETS: Record<string, { endpoint: string; forcePathStyle: boolean; region?: string }> = {
   "AWS S3": { endpoint: "https://s3.amazonaws.com", forcePathStyle: false },
@@ -35,6 +37,12 @@ export class SetupWizard extends Modal {
     contentEl.createEl("p", {
       text: "Back up ALL of your vault to any S3-compatible bucket, end-to-end encrypted.",
     });
+    if (Platform.isMobileApp) {
+      contentEl.createEl("p", {
+        text: "On mobile, sync runs when the app is open and resumes on return to foreground. Large vaults may take a while and use more memory.",
+        cls: "setting-item-description",
+      });
+    }
 
     new Setting(contentEl).setName("Provider preset").addDropdown((d) => {
       d.addOption("", "— pick to autofill —");
@@ -74,7 +82,7 @@ export class SetupWizard extends Modal {
     );
     new Setting(contentEl).setName("Secret access key").addText((t) => {
       t.inputEl.type = "password";
-      t.setValue(settings.s3.secretAccessKey).onChange((v) => (settings.s3.secretAccessKey = v));
+      t.setValue(readS3Secret(this.app)).onChange((v) => writeS3Secret(this.app, v));
     });
     text(
       "Bucket",
@@ -103,11 +111,26 @@ export class SetupWizard extends Modal {
       "desktop / mobile / …",
     );
 
+    new Setting(contentEl)
+      .setName("Custom request headers")
+      .setDesc("Optional. One per line as `Header: value` — for auth proxies/gateways.")
+      .addTextArea((t) => {
+        t.setValue(formatHeaderLines(settings.s3.customHeaders)).onChange((v) => {
+          settings.s3.customHeaders = parseHeaderLines(v);
+        });
+        t.inputEl.rows = 2;
+      });
+
     new Setting(contentEl).addButton((b) =>
       b.setButtonText("Test connection").onClick(async () => {
         try {
-          await this.controller.testConnection();
+          const { conditionalPut } = await this.controller.testConnection();
           new Notice("✅ Connected to bucket.");
+          if (!conditionalPut)
+            new Notice(
+              "⚠ This bucket ignores conditional create (If-None-Match). Sync still works, but manifest updates rely on recompute rather than a strict write lock.",
+              8000,
+            );
         } catch (e) {
           new Notice(`⛔ ${(e as Error).message}`);
         }

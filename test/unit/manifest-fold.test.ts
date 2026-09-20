@@ -71,6 +71,23 @@ describe("foldManifests", () => {
     expect(entry.history[entry.head].deleted).toBe(true);
   });
 
+  test("does not mutate the input manifests", () => {
+    const aRec = rec({ contentHash: "x", mtime: 100 });
+    const bRec = rec({ contentHash: "y", mtime: 200 });
+    const a = manifest("desktop", { "n.md": [aRec] });
+    const b = manifest("mobile", { "n.md": [bRec] });
+    const aBefore = JSON.stringify(a);
+    const bBefore = JSON.stringify(b);
+    foldManifests([a, b]);
+    expect(JSON.stringify(a)).toBe(aBefore);
+    expect(JSON.stringify(b)).toBe(bBefore);
+    // and renumbering touches only the merged copies
+    const { merged } = foldManifests([a, b]);
+    expect(merged.paths["n.md"].history.map((r) => r.version)).toEqual([0, 1]);
+    expect(aRec.version).toBe(0);
+    expect(bRec.version).toBe(0);
+  });
+
   test("is deterministic regardless of device input order", () => {
     const a = manifest("desktop", { "n.md": [rec({ contentHash: "x", mtime: 100 })] });
     const b = manifest("mobile", { "n.md": [rec({ contentHash: "y", mtime: 200 })] });

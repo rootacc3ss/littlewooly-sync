@@ -47,7 +47,7 @@ describe("Repair", () => {
 
     // Simulate bucket corruption: wipe stored objects.
     for (const k of [...bucket.store.keys()]) if (k.startsWith("objects/")) bucket.store.delete(k);
-    const before = await runAudit(d.fs, d.manifests, bucket);
+    const before = await runAudit(d.fs, d.manifests, bucket, d.objects);
     expect(before.findings.MISSING_OBJECT.length).toBeGreaterThan(0);
     expect(before.criticalCount).toBeGreaterThan(0);
 
@@ -65,7 +65,7 @@ describe("Repair", () => {
     d.fs.set("a.md", "x", 100);
     d.fs.set("b.md", "y", 100);
     await d.engine.sync();
-    const report = await runAudit(d.fs, d.manifests, bucket);
+    const report = await runAudit(d.fs, d.manifests, bucket, d.objects);
     expect(report.criticalCount).toBe(0);
     expect(report.plaintextBytes).toBeGreaterThan(0);
   });

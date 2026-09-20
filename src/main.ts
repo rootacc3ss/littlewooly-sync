@@ -1,5 +1,7 @@
-import { Notice, Plugin } from "obsidian";
+import { Notice, Plugin, TAbstractFile } from "obsidian";
 import { Controller, DEFAULT_SETTINGS, type LwsSettings } from "./controller";
+import type { S3Config } from "./types";
+import { writePassphrase, writeS3Secret } from "./secrets";
 import { LwsSettingTab } from "./ui/settings-tab";
 import { SetupWizard } from "./ui/setup-wizard";
 import { StatusBar } from "./ui/status-bar";
@@ -42,6 +44,10 @@ export default class LittleWoolySyncPlugin extends Plugin {
         new Notice("Little Wooly Sync: open settings to set up your encrypted backup.");
         return;
       }
+      if (!this.controller.hasPassphrase()) {
+        this.status.set("error", "passphrase missing — re-run setup");
+        return;
+      }
       try {
         const ok = await this.controller.unlock();
         if (!ok) {
@@ -61,12 +67,20 @@ export default class LittleWoolySyncPlugin extends Plugin {
       );
     }
     if (this.settings.syncOnSave) {
-      const sched = () => this.scheduleSync();
+      // Vault events fired by our OWN sync writes are ignored (tracked per-path by the
+      // controller) — otherwise every download would schedule a redundant echo sync.
+      const sched = (file: TAbstractFile) => this.scheduleSync(file.path);
       this.registerEvent(this.app.vault.on("modify", sched));
       this.registerEvent(this.app.vault.on("create", sched));
       this.registerEvent(this.app.vault.on("delete", sched));
-      this.registerEvent(this.app.vault.on("rename", sched));
+      this.registerEvent(this.app.vault.on("rename", (file) => sched(file)));
     }
+
+    // Returning from background (esp. mobile, where the app suspends) triggers a sync —
+    // timers and events don't run while the app is suspended.
+    this.registerDomEvent(document, "visibilitychange", () => {
+      if (!document.hidden) this.scheduleSync();
+    });
   }
 
   onunload(): void {
@@ -80,7 +94,9 @@ export default class LittleWoolySyncPlugin extends Plugin {
     }).open();
   }
 
-  private scheduleSync(): void {
+  private scheduleSync(path?: string): void {
+    if (this.syncing) return;
+    if (path && this.controller.recentlySelfWrote(path)) return;
     if (this.saveTimer) window.clearTimeout(this.saveTimer);
     this.saveTimer = window.setTimeout(() => this.runSync(), 4000); // debounce editor saves
   }
@@ -93,8 +109,10 @@ export default class LittleWoolySyncPlugin extends Plugin {
       const r = await this.controller.sync();
       const note =
         `↑${r.uploaded} ↓${r.downloaded} 🗑${r.deletedLocal}` +
+        (r.mergedJson.length ? ` ⟲${r.mergedJson.length} merged` : "") +
         (r.conflictCopies.length ? ` ⚠${r.conflictCopies.length} conflict copies` : "");
       this.status.set(r.conflictCopies.length ? "warn" : "ok", note);
+      if (r.mergedJson.length) new Notice(`Synced with 3-way merge: ${r.mergedJson.join(", ")}`);
       if (r.conflictCopies.length)
         new Notice(`Sync kept ${r.conflictCopies.length} conflict copies.`);
     } catch (e) {
@@ -112,7 +130,7 @@ export default class LittleWoolySyncPlugin extends Plugin {
       const r = await this.controller.audit(true);
       this.status.set(r.criticalCount ? "error" : "ok", r.verdict);
       new Notice(
-        `${r.verdict}\nplaintext ${(r.plaintextBytes / 1e6).toFixed(1)}MB → stored ${(r.storedBytes / 1e6).toFixed(1)}MB (ratio ${r.ratio.toFixed(2)})`,
+        `${r.verdict}\nplaintext ${(r.plaintextBytes / 1e6).toFixed(1)}MB → stored ${(r.storedBytes / 1e6).toFixed(1)}MB (ratio ${r.ratio.toFixed(2)})\nexcluded by rule: ${r.excluded.length} item(s) — see debug report for the roster`,
         10000,
       );
     } catch (e) {
@@ -142,7 +160,26 @@ export default class LittleWoolySyncPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = (await this.loadData()) as
+      | (Partial<LwsSettings> & { passphrase?: string; s3?: Partial<S3Config> })
+      | null;
+
+    // One-time migration: pull plaintext secrets out of data.json into SecretStorage, then
+    // strip them so they are never written back.
+    const legacyPassphrase = data?.passphrase;
+    const legacyS3Secret = data?.s3?.secretAccessKey;
+
+    const s3 = { ...DEFAULT_SETTINGS.s3, ...(data?.s3 ?? {}) } as LwsSettings["s3"] & {
+      secretAccessKey?: string;
+    };
+    delete s3.secretAccessKey;
+    if (data) delete data.passphrase;
+
+    this.settings = { ...DEFAULT_SETTINGS, ...(data ?? {}), s3 };
+
+    if (legacyPassphrase) writePassphrase(this.app, legacyPassphrase);
+    if (legacyS3Secret) writeS3Secret(this.app, legacyS3Secret);
+    if (legacyPassphrase || legacyS3Secret) await this.saveSettings();
   }
 
   async saveSettings(): Promise<void> {

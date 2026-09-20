@@ -82,7 +82,7 @@ describe("full sync over MinIO (two devices)", () => {
     expect(new TextDecoder().decode(await b.fs.read("big.bin")).length).toBe(10000);
 
     // Coverage audit is clean on B.
-    const report = await runAudit(b.fs, b.manifests, b.backend);
+    const report = await runAudit(b.fs, b.manifests, b.backend, b.objects);
     expect(report.criticalCount).toBe(0);
     expect(report.verdict).toMatch(/FULL COVERAGE/);
 

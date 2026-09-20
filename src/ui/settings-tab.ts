@@ -4,6 +4,7 @@
 
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type LittleWoolySyncPlugin from "../main";
+import { formatHeaderLines, parseHeaderLines } from "./custom-headers";
 
 export class LwsSettingTab extends PluginSettingTab {
   constructor(
@@ -41,8 +42,13 @@ export class LwsSettingTab extends PluginSettingTab {
       .addButton((b) =>
         b.setButtonText("Test").onClick(async () => {
           try {
-            await this.plugin.controller.testConnection();
+            const { conditionalPut } = await this.plugin.controller.testConnection();
             new Notice("✅ Connected.");
+            if (!conditionalPut)
+              new Notice(
+                "⚠ This bucket ignores conditional create (If-None-Match); manifest updates fall back to recompute.",
+                8000,
+              );
           } catch (e) {
             new Notice(`⛔ ${(e as Error).message}`);
           }
@@ -130,6 +136,17 @@ export class LwsSettingTab extends PluginSettingTab {
           new Notice(`Archive created: ${key}`);
         }),
       );
+
+    new Setting(adv)
+      .setName("Custom request headers")
+      .setDesc("Optional. One per line as `Header: value` — for auth proxies/gateways.")
+      .addTextArea((t) => {
+        t.setValue(formatHeaderLines(s.s3.customHeaders)).onChange(async (v) => {
+          s.s3.customHeaders = parseHeaderLines(v);
+          await this.plugin.saveSettings();
+        });
+        t.inputEl.rows = 2;
+      });
 
     new Setting(adv)
       .setName("Debug report")

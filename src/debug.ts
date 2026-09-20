@@ -36,8 +36,11 @@ export async function buildDebugReport(
 
   L("## Connectivity");
   try {
-    await controller.testConnection();
+    const { conditionalPut } = await controller.testConnection();
     L("- S3 testConnection: OK");
+    L(
+      `- conditional PUT (If-None-Match): ${conditionalPut ? "honored" : "IGNORED — manifest CAS falls back to recompute"}`,
+    );
   } catch (e) {
     L(`- S3 testConnection: FAILED — ${(e as Error).message}`);
   }
@@ -53,6 +56,10 @@ export async function buildDebugReport(
       L(`- ratio (stored/plaintext): ${r.ratio.toFixed(3)}`);
       for (const [bucket, paths] of Object.entries(r.findings)) {
         if (paths.length) L(`- ${bucket}: ${paths.length} — ${paths.slice(0, 10).join(", ")}`);
+      }
+      if (r.excluded.length) {
+        L(`- excluded from coverage: ${r.excluded.length} item(s)`);
+        for (const { path, reason } of r.excluded) L(`    ${path} — ${reason}`);
       }
     } catch (e) {
       L(`- audit FAILED — ${(e as Error).message}`);

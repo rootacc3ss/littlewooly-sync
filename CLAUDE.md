@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**Little Wooly Sync** — a desktop-first Obsidian plugin that backs up, in real time, **ALL**
-files in a vault to any S3-compatible bucket, **end-to-end encrypted**, with **provable
-coverage** and **no silent caps**. Part of the Little Wooly suite.
+**Little Wooly Sync** — an Obsidian plugin (desktop **and** mobile) that backs up, in real
+time, **ALL** files in a vault to any S3-compatible bucket, **end-to-end encrypted**, with
+**provable coverage** and **no silent caps**. Part of the Little Wooly suite.
 
 North star, in priority order:
 1. **Strong client-side E2E encryption** — the bucket never sees plaintext (content or names).
@@ -35,32 +35,54 @@ The full design lives in `~/.claude/plans/quizzical-twirling-squirrel.md` (the a
 - `npm run typecheck` — `tsc --noEmit`.
 - `npm run lint` / `npm run format` / `npm run format:check`.
 - `npm run test` / `npm run test:unit` / `npm run test:integration` — vitest.
-- `npm run test:minio:up` / `:down` — local MinIO container for S3 integration tests.
-- `npm run gates` — typecheck + lint + format:check + unit tests (run before declaring done).
+- `npm run test:minio:up` / `:down` — local MinIO container for S3 integration tests (uses
+  docker when available, otherwise podman).
+- `npm run gates` — typecheck + lint + format:check + unit tests + production build +
+  bundle guard (run before declaring done).
+- `npm run verify:bundle` — fails if `main.js` contains Node-only constructs (would break
+  mobile). Guard: keep esbuild on `platform: "browser"`; no Node built-ins, ever.
 - A single test: `npx vitest run test/unit/object-cipher.test.ts` (or `-t "<name>"`).
 
-## Architecture (see plan for detail)
+## Architecture
 
-Bundled by esbuild to a single CJS `main.js`; desktop-only (`isDesktopOnly: true`) so we can
-use Node `fs`, `chokidar`, and the S3 SDK's Node HTTP handler (no Electron-renderer CORS).
+Bundled by esbuild to a single CJS `main.js` with `platform: "browser"` — no Node built-ins
+anywhere, so the same bundle runs on desktop (Electron) and mobile (Capacitor/WKWebView).
+`minAppVersion` is 1.11.4 (required for `app.secretStorage`).
 
-- `src/crypto/` — `keys.ts` (Argon2id KDF → HKDF subkeys → verifier), `object-cipher.ts`
-  (convergent AES-256-GCM: deterministic nonce + secret-keyed HMAC names → dedup + idempotency).
-- `src/store/` — `s3-client.ts` (Node-HTTP-handler SDK wrapper, path/virtual style, custom
-  headers, conditional-PUT probe, `testConnection`), `prefixed-backend.ts` (`lwsync/<vault>/`
-  scoping), `object-store.ts` (chunking, content-addressed dedup, idempotent PUT, GC),
-  `manifest-store.ts` (per-device append-only logs + CAS-merged global manifest, tombstones),
-  `vault-config.ts` (encrypted `meta/vaultconfig` for cross-device bootstrap; no secrets).
+- `src/crypto/` — `keys.ts` (Argon2id KDF, RFC 9106 64 MiB mobile-safe default → HKDF
+  subkeys → verifier), `object-cipher.ts` (convergent AES-256-GCM: deterministic nonce +
+  secret-keyed HMAC names → dedup + idempotency), `box.ts` (random-nonce AES-GCM for
+  manifests/config), `bytes.ts` (pure-TS base64 — no Buffer).
+- `src/store/` — `backend.ts` (ObjectBackend interface + PreconditionFailedError),
+  `obs-http-handler.ts` (smithy HttpHandler over Obsidian `requestUrl` — the single HTTP
+  path that bypasses CORS on BOTH desktop and mobile), `s3-client.ts` (SDK wrapper:
+  path/virtual style, custom headers, conditional PUT, checksums pinned WHEN_REQUIRED,
+  `testConnection` → `{ conditionalPut }`), `prefixed-backend.ts` (`lwsync/<vault>/`
+  scoping), `object-store.ts` (chunking, content-addressed dedup, idempotent PUT, recipe
+  objects), `manifest-store.ts` (per-device append-only logs + CAS-merged global manifest,
+  tombstones), `vault-config.ts` (encrypted `meta/vaultconfig` for cross-device bootstrap;
+  no secrets), `device-config-store.ts` (per-device `.obsidian` backup/restore).
 - `src/engine/` — `file-classifier.ts` (**central**: CONTENT / SHARED_CONFIG / DEVICE_CONFIG /
   EXCLUDE — device-specific config is namespaced per device and never auto-applied elsewhere),
-  `vault-walker.ts` (dual fs + adapter enumeration), `local-index.ts` (IndexedDB cache,
-  rebuildable), `change-detector.ts` (vault events + chokidar + periodic scan + daily deep
-  rehash), `sync-engine.ts` (pull-merge before push), `conflict-resolver.ts` (conflict-copy +
-  JSON 3-way merge), `trash.ts` (soft-delete via `vault.trash`), `coverage-auditor.ts`
-  (three-way live/manifest/bucket diff + size reconciliation), `repair.ts` (additive fix).
-- `src/ui/` — `setup-wizard.ts` (≤3 screens; new-vault vs connect-existing + restore choice),
-  `settings-tab.ts` (slim, progressive), `status-bar.ts`.
-- `src/main.ts` — entry/wiring. `src/types.ts` — shared, dependency-free types.
+  `vault-walker.ts` (adapter `list`/`stat` enumeration — no Node fs; returns entries + a
+  roster of every exclusion with its reason), `obsidian-vault-fs.ts` (DataAdapter-backed
+  VaultFS with an onWrite self-write hook), `local-index.ts` + `idb-index.ts` (IndexedDB
+  cache, rebuildable), `sync-engine.ts` (pull-merge before push; JSON 3-way merge attempt
+  before conflict copy), `conflict-resolver.ts` (conflict-copy + JSON 3-way merge), `trash.ts`
+  (soft-delete via adapter trash), `coverage-auditor.ts` + `coverage-service.ts` (three-way
+  live/manifest/bucket diff, chunk verification, orphan detection, size reconciliation),
+  `repair.ts` (additive fix), `archive-job.ts` (LWA1 catch-all archive; optional gzip via
+  CompressionStream — no tar, no Node).
+- `src/ui/` — `setup-wizard.ts` (≤3 screens; new-vault vs connect-existing + restore choice;
+  custom headers; mobile note), `settings-tab.ts` (slim, progressive; conditional-PUT
+  warning; custom headers), `status-bar.ts`, `custom-headers.ts` (`Header: value` serialization).
+- `src/controller.ts` — stack wiring, `testConnection` → `{ conditionalPut }`, mobile KDF
+  memory warning, self-write tracking. `src/secrets.ts` — passphrase + S3 secret live in
+  Obsidian SecretStorage (`app.secretStorage`), NEVER in plaintext `data.json`; `main.ts`
+  migrates legacy plaintext secrets on load.
+- `src/main.ts` — entry/wiring; triggers: sync-on-start, interval, sync-on-save (debounced,
+  ignores self-writes), `visibilitychange` resume (mobile suspend-safe). `src/types.ts` —
+  shared, dependency-free types.
 
 ### Key invariants
 - **Manifest source of truth = per-device append-only logs**; the merged manifest is derived
@@ -72,6 +94,11 @@ use Node `fs`, `chokidar`, and the S3 SDK's Node HTTP handler (no Electron-rende
   deletions need absence in *both* walkers across *two* scans before tombstoning.
 
 ## Testing layout
-- `test/unit/` — pure-logic tests (crypto, classifier, manifest fold, audit diff).
-- `test/integration/` — against local MinIO (`test:minio:up` first; reads `.test.env`).
-- `test/shell/` — MinIO start/stop scripts (ported from the reference's pattern).
+- `test/unit/` — pure-logic tests (crypto, classifier, manifest fold, audit diff, LWA1
+  archive round-trip, ObsHttpHandler with an injected fake `requestUrl`).
+- `test/integration/` — against local MinIO (`test:minio:up` first; defaults work with
+  `minioadmin`, or override via `.test.env`-style `LWS_S3_*` env vars).
+- `test/shell/` — MinIO start/stop scripts (docker or podman; podman-compatible).
+- `test/helpers/obsidian-mock.ts` — vitest aliases `obsidian` here (the real package ships
+  types only). `test/helpers/memory-vault-fs.ts` — in-memory VaultFS; pass ONE shared clock
+  into every device so manifest-fold LWW sees comparable mtimes.

@@ -33,12 +33,14 @@ export class Repair {
   ) {}
 
   async repair(): Promise<RepairResult> {
-    const before = await runAudit(this.fs, this.manifests, this.backend, { deep: true });
+    const before = await runAudit(this.fs, this.manifests, this.backend, this.objects, {
+      deep: true,
+    });
 
     // 1. Re-ensure every live file's object is present (recreates missing blobs from the
     //    local copy; putFile HEADs first so already-present objects cost nothing).
     let reuploaded = 0;
-    for (const e of await this.fs.walk()) {
+    for (const e of (await this.fs.walk()).entries) {
       if (!SHARED_TIERS.has(e.tier)) continue;
       await this.objects.putFile(await this.fs.read(e.path));
       reuploaded++;
@@ -48,7 +50,9 @@ export class Repair {
     await this.index.clear();
     await this.engine.sync();
 
-    const after = await runAudit(this.fs, this.manifests, this.backend, { deep: true });
+    const after = await runAudit(this.fs, this.manifests, this.backend, this.objects, {
+      deep: true,
+    });
     return { before, after, reuploaded };
   }
 }

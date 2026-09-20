@@ -43,10 +43,11 @@ export function foldManifests(manifests: Manifest[]): FoldResult {
   const conflicts: ConflictInfo[] = [];
 
   for (const [path, records] of byPath) {
-    // Dedup identical records, then order deterministically (LWW = last).
+    // Dedup identical records, copy them (folding must never mutate the caller's
+    // manifests), then order deterministically (LWW = last) and renumber.
     const seen = new Map<string, HistoryRecord>();
     for (const r of records) seen.set(recordId(r), r);
-    const history = [...seen.values()].sort(ordering);
+    const history = [...seen.values()].map((r) => ({ ...r })).sort(ordering);
     history.forEach((r, i) => (r.version = i));
 
     const entry: ManifestEntry = { history, head: history.length - 1 };

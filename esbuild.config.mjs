@@ -1,6 +1,5 @@
 import esbuild from "esbuild";
 import process from "node:process";
-import builtins from "builtin-modules";
 
 const banner = `/*
 Little Wooly Sync — bundled output. Do not edit directly; edit src/ and rebuild.
@@ -8,6 +7,10 @@ Little Wooly Sync — bundled output. Do not edit directly; edit src/ and rebuil
 
 const prod = process.argv[2] === "production";
 
+// platform: "browser" is load-bearing — it keeps the bundle free of Node built-ins
+// (fs/path/crypto/stream) so the identical main.js runs on desktop (Electron) AND mobile
+// (Capacitor/WKWebView). Anything that reintroduces a Node dependency will fail the
+// `verify-bundle` guard.
 const ctx = await esbuild.context({
   banner: { js: banner },
   entryPoints: ["src/main.ts"],
@@ -26,10 +29,11 @@ const ctx = await esbuild.context({
     "@lezer/common",
     "@lezer/highlight",
     "@lezer/lr",
-    ...builtins,
   ],
   format: "cjs",
-  platform: "node",
+  platform: "browser",
+  mainFields: ["browser", "module", "main"],
+  conditions: ["browser"],
   target: "es2020",
   logLevel: "info",
   sourcemap: prod ? false : "inline",

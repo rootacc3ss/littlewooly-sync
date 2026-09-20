@@ -1,26 +1,29 @@
-// Runtime VaultFS: enumerates via the Node walker (full fs access on desktop, so hidden
-// files are covered), and reads/writes/trashes through Obsidian's data adapter so the app
-// stays consistent. Soft-delete uses the adapter's local trash (.trash).
+// Runtime VaultFS: enumerates via the adapter walker (DataAdapter sees hidden files and
+// .obsidian/ on desktop AND mobile, so coverage stays total), and reads/writes/trashes
+// through the same adapter so Obsidian stays consistent. No Node APIs — the
+// FileSystemAdapter cast would crash on mobile, where the adapter is a CapacitorAdapter.
+// Soft-delete uses the adapter's local trash (.trash).
 
-import { type App, FileSystemAdapter } from "obsidian";
+import type { App, DataAdapter } from "obsidian";
 import type { VaultFS } from "./vault-fs";
-import { walkVault, type WalkEntry } from "./vault-walker";
+import { walkVault, type WalkResult } from "./vault-walker";
 import type { ClassifyOptions } from "./file-classifier";
 
 export class ObsidianVaultFS implements VaultFS {
-  private adapter: FileSystemAdapter;
-  private basePath: string;
+  private adapter: DataAdapter;
 
   constructor(
     app: App,
     private opts: ClassifyOptions,
+    /** Notified of every path this class writes/mkdirs/trashes (sync self-writes, so the
+     *  plugin's vault-event handlers can tell them apart from real user edits). */
+    private onWrite?: (path: string) => void,
   ) {
-    this.adapter = app.vault.adapter as FileSystemAdapter;
-    this.basePath = this.adapter.getBasePath();
+    this.adapter = app.vault.adapter;
   }
 
-  async walk(): Promise<WalkEntry[]> {
-    return (await walkVault(this.basePath, this.opts)).entries;
+  async walk(): Promise<WalkResult> {
+    return walkVault(this.adapter, this.opts);
   }
 
   async read(path: string): Promise<Uint8Array> {
@@ -31,11 +34,13 @@ export class ObsidianVaultFS implements VaultFS {
     await this.ensureDir(path);
     const ab = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
     await this.adapter.writeBinary(path, ab);
+    this.onWrite?.(path);
   }
 
   async trash(path: string): Promise<void> {
     // local trash (.trash in the vault) — soft delete, recoverable by the user.
     await this.adapter.trashLocal(path);
+    this.onWrite?.(path);
   }
 
   async exists(path: string): Promise<boolean> {
@@ -50,7 +55,10 @@ export class ObsidianVaultFS implements VaultFS {
     let cur = "";
     for (const seg of segments) {
       cur = cur ? `${cur}/${seg}` : seg;
-      if (!(await this.adapter.exists(cur))) await this.adapter.mkdir(cur);
+      if (!(await this.adapter.exists(cur))) {
+        await this.adapter.mkdir(cur);
+        this.onWrite?.(cur);
+      }
     }
   }
 }

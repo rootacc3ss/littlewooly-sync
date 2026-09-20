@@ -5,7 +5,7 @@
 // the bucket (meta/keyparams) so any device can reproduce the derivation.
 
 import { argon2id } from "hash-wasm";
-import { view } from "./bytes";
+import { view, b64encode, b64decode } from "./bytes";
 
 const subtle = globalThis.crypto.subtle;
 
@@ -35,19 +35,24 @@ export interface Verifier {
 const VERIFY_PLAINTEXT = "littlewooly-v1-verify";
 
 function b64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64");
+  return b64encode(bytes);
 }
 function unb64(s: string): Uint8Array {
-  return new Uint8Array(Buffer.from(s, "base64"));
+  return b64decode(s);
 }
 
-/** Fresh params with a random 16-byte salt and the 2026 desktop defaults. */
+/**
+ * Fresh params with a random 16-byte salt. Uses the RFC 9106 low-memory profile
+ * (64 MiB, 3 iterations, 1 lane) — the strongest Argon2id profile that reliably fits
+ * in a mobile (iOS WKWebView) WASM memory budget, so a vault created on desktop can
+ * still be unlocked on a phone.
+ */
 export function generateKdfParams(): KdfParams {
   const salt = new Uint8Array(16);
   globalThis.crypto.getRandomValues(salt);
   return {
     algo: "argon2id",
-    memoryKiB: 262144, // 256 MiB
+    memoryKiB: 65536, // 64 MiB — RFC 9106 §4 second recommended profile
     iterations: 3,
     parallelism: 1,
     hashLength: 32,
