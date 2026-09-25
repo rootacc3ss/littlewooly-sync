@@ -72,10 +72,18 @@ anywhere, so the same bundle runs on desktop (Electron) and mobile (Capacitor/WK
   (soft-delete via adapter trash), `coverage-auditor.ts` + `coverage-service.ts` (three-way
   live/manifest/bucket diff, chunk verification, orphan detection, size reconciliation),
   `repair.ts` (additive fix), `archive-job.ts` (LWA1 catch-all archive; optional gzip via
-  CompressionStream — no tar, no Node).
-- `src/ui/` — `setup-wizard.ts` (≤3 screens; new-vault vs connect-existing + restore choice;
-  custom headers; mobile note), `settings-tab.ts` (slim, progressive; conditional-PUT
-  warning; custom headers), `status-bar.ts`, `custom-headers.ts` (`Header: value` serialization).
+  CompressionStream — no tar, no Node), `retention.ts` (pure purge collector + safe purge;
+  default 0 = nothing is ever deleted, any live head on any device vetoes a purge, shared
+  dedup chunks are protected, an unreadable protected recipe vetoes the whole purge).
+- `src/portability.ts` — setup export/import (`littlewooly-sync-setup.json` in the vault
+  root; secrets only opt-in, sealed with a one-time export passphrase via the same
+  Argon2id→HKDF→AES-GCM stack; never plaintext).
+- `src/ui/` — `setup-wizard.ts` (connection → passphrase/restore → **Preferences** →
+  "You're all set"; custom headers; import from a setup file), `settings-tab.ts` (slim,
+  progressive; conditional-PUT warning; custom headers; retention; export/import),
+  `status-bar.ts`, `custom-headers.ts` (`Header: value` serialization), `modals.ts`
+  (password prompt + export/import flows), `tutorial.ts` (shared orientation content +
+  Show tutorial command).
 - `src/controller.ts` — stack wiring, `testConnection` → `{ conditionalPut }`, mobile KDF
   memory warning, self-write tracking. `src/secrets.ts` — passphrase + S3 secret live in
   Obsidian SecretStorage (`app.secretStorage`), NEVER in plaintext `data.json`; `main.ts`
@@ -92,10 +100,14 @@ anywhere, so the same bundle runs on desktop (Electron) and mobile (Capacitor/WK
   (history/restore). Convergent encryption makes identical plaintext dedupe to one object.
 - **Coverage is proven, not assumed**: every walked item is recorded with INCLUDE/EXCLUDE(reason);
   deletions need absence in *both* walkers across *two* scans before tombstoning.
+- **Nothing is deleted by default** (`VaultConfig.retentionDays = 0`): retention purge only runs
+  when opted in, only touches paths tombstoned on EVERY device manifest past the window, never
+  live files or their old versions, and shared dedup chunks are never deleted.
 
 ## Testing layout
 - `test/unit/` — pure-logic tests (crypto, classifier, manifest fold, audit diff, LWA1
-  archive round-trip, ObsHttpHandler with an injected fake `requestUrl`).
+  archive round-trip, retention collector/purge, setup-portability round-trips,
+  ObsHttpHandler with an injected fake `requestUrl`).
 - `test/integration/` — against local MinIO (`test:minio:up` first; defaults work with
   `minioadmin`, or override via `.test.env`-style `LWS_S3_*` env vars).
 - `test/shell/` — MinIO start/stop scripts (docker or podman; podman-compatible).

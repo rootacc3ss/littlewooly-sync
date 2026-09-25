@@ -4,8 +4,18 @@
 
 import type { App } from "obsidian";
 import { Notice, Platform } from "obsidian";
-import type { S3Config, VaultConfig } from "./types";
-import { readPassphrase, writePassphrase, readS3Secret } from "./secrets";
+import type { S3Config, VaultConfig, Manifest } from "./types";
+import { readPassphrase, writePassphrase, readS3Secret, writeS3Secret } from "./secrets";
+import {
+  SETUP_FILE,
+  buildSetupDoc,
+  serializeSetupDoc,
+  parseSetupDoc,
+  applySetupDoc,
+  encryptSecrets,
+  decryptSecrets,
+} from "./portability";
+import { collectPurgeable, applyPurge } from "./engine/retention";
 import { S3Backend } from "./store/s3-client";
 import { PrefixedBackend } from "./store/prefixed-backend";
 import { ObjectStore } from "./store/object-store";
@@ -84,6 +94,8 @@ export class Controller {
   /** Paths we wrote during pull (path -> epoch ms), so vault-event handlers can tell our
    *  own sync writes apart from real user edits. */
   private selfWrites = new Map<string, number>();
+  /** In-memory throttle: retention purge runs at most once a day (when enabled). */
+  private lastRetentionRun = 0;
 
   constructor(
     private app: App,
@@ -92,6 +104,11 @@ export class Controller {
 
   get ready(): boolean {
     return this.stack !== null;
+  }
+
+  /** Current shared deletion-retention policy (days; 0 = keep everything forever). */
+  get retentionDays(): number {
+    return this.stack ? (this.stack.config.retentionDays ?? 0) : 0;
   }
 
   noteSelfWrite(path: string): void {
@@ -228,7 +245,73 @@ export class Controller {
     const s = this.require();
     const result = await s.engine.sync();
     await s.deviceConfig.backup(s.fs, this.settings.deviceName); // device config backed up each sync
+    await this.runRetention(s);
     return result;
+  }
+
+  /** Change the shared deletion-retention policy (writes the encrypted VaultConfig). */
+  async setRetention(days: number): Promise<void> {
+    const s = this.require();
+    const config: VaultConfig = { ...s.config, retentionDays: Math.max(0, Math.floor(days)) };
+    await s.vaultConfig.writeConfig(s.subkeys.manifestKey, config);
+    s.config = config;
+  }
+
+  /**
+   * Opt-in deletion retention (retentionDays > 0 only; default 0 = nothing is ever
+   * deleted). At most once a day, purge objects of paths tombstoned on EVERY device
+   * manifest and older than the window. See engine/retention.ts for the safety rules.
+   */
+  private async runRetention(s: Stack): Promise<void> {
+    const days = s.config.retentionDays ?? 0;
+    if (days <= 0) return;
+    const now = Date.now();
+    if (now - this.lastRetentionRun < 86_400_000) return;
+    this.lastRetentionRun = now;
+
+    const manifests: Manifest[] = [];
+    for (const d of await s.manifests.listDevices()) {
+      const m = await s.manifests.readDeviceLatest(d);
+      if (m) manifests.push(m);
+    }
+    const candidates = collectPurgeable(manifests, now, days);
+    if (!candidates.length) return;
+    const purged = await applyPurge(s.objects, candidates, await s.manifests.readMerged());
+    if (purged > 0) {
+      new Notice(
+        `Little Wooly Sync: retention purged ${purged} object(s) for files deleted more than ${days} day(s) ago.`,
+        8000,
+      );
+    }
+  }
+
+  /** Write the setup file to the vault root (secrets only if a passphrase is given). */
+  async exportSetup(includeSecrets: boolean, exportPassphrase?: string): Promise<void> {
+    const secrets =
+      includeSecrets && exportPassphrase
+        ? await encryptSecrets(exportPassphrase, {
+            s3SecretAccessKey: readS3Secret(this.app),
+            passphrase: readPassphrase(this.app),
+          })
+        : null;
+    const doc = buildSetupDoc(this.settings, secrets);
+    await this.app.vault.adapter.write(SETUP_FILE, serializeSetupDoc(doc));
+  }
+
+  /** Read the setup file from the vault root into live settings (+ secrets if present). */
+  async importSetup(exportPassphrase?: string): Promise<{ hadSecrets: boolean }> {
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(SETUP_FILE))) {
+      throw new Error(`${SETUP_FILE} not found in the vault root.`);
+    }
+    const doc = parseSetupDoc(await adapter.read(SETUP_FILE));
+    applySetupDoc(this.settings, doc);
+    if (doc.secrets) {
+      const secrets = await decryptSecrets(doc.secrets, exportPassphrase ?? "");
+      writeS3Secret(this.app, secrets.s3SecretAccessKey);
+      writePassphrase(this.app, secrets.passphrase);
+    }
+    return { hadSecrets: doc.secrets !== null };
   }
 
   audit(deep = true): Promise<AuditReport> {

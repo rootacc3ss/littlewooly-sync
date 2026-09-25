@@ -1,11 +1,15 @@
-// First-run / connect flow. One screen of connection fields + Test, then branches on what's
-// in the bucket: new vault -> set passphrase; existing -> verify passphrase + choose restore
-// (everything vs content-only). Far slimmer than the reference's 8-screen wizard.
+// First-run / connect flow: one screen of connection fields (+ Test, + import from a
+// setup file), then what's in the bucket decides: new vault -> passphrase; existing ->
+// passphrase + restore choice. Both paths end at Preferences, then a short "You're all
+// set" orientation. Far slimmer than the reference's 8-screen wizard.
 
 import { App, Modal, Notice, Platform, Setting } from "obsidian";
 import type { Controller, LwsSettings } from "../controller";
 import { readS3Secret, writeS3Secret } from "../secrets";
+import { SETUP_FILE } from "../portability";
 import { formatHeaderLines, parseHeaderLines } from "./custom-headers";
+import { openImportSetupModal } from "./modals";
+import { renderTutorialContent } from "./tutorial";
 
 const PRESETS: Record<string, { endpoint: string; forcePathStyle: boolean; region?: string }> = {
   "AWS S3": { endpoint: "https://s3.amazonaws.com", forcePathStyle: false },
@@ -30,7 +34,7 @@ export class SetupWizard extends Modal {
     super(app);
   }
 
-  onOpen(): void {
+  async onOpen(): Promise<void> {
     const { contentEl, settings } = { contentEl: this.contentEl, settings: this.settings };
     contentEl.empty();
     contentEl.createEl("h2", { text: "Little Wooly Sync — setup" });
@@ -44,6 +48,21 @@ export class SetupWizard extends Modal {
       });
     }
 
+    // Moving devices? If a setup file sits in the vault root, offer to load it.
+    if (await this.app.vault.adapter.exists(SETUP_FILE)) {
+      new Setting(contentEl)
+        .setName("Import setup from file")
+        .setDesc(`Found ${SETUP_FILE} in the vault root — loads connection + preferences.`)
+        .addButton((b) =>
+          b
+            .setButtonText("Import")
+            .setCta()
+            .onClick(() =>
+              openImportSetupModal(this.app, this.controller, () => void this.onOpen()),
+            ),
+        );
+    }
+
     new Setting(contentEl).setName("Provider preset").addDropdown((d) => {
       d.addOption("", "— pick to autofill —");
       for (const k of Object.keys(PRESETS)) d.addOption(k, k);
@@ -53,7 +72,7 @@ export class SetupWizard extends Modal {
         settings.s3.endpoint = p.endpoint;
         settings.s3.forcePathStyle = p.forcePathStyle;
         if (p.region) settings.s3.region = p.region;
-        this.onOpen(); // re-render with autofilled values
+        void this.onOpen(); // re-render with autofilled values
       });
     });
 
@@ -196,7 +215,7 @@ export class SetupWizard extends Modal {
           try {
             await this.controller.initNewVault(pass);
             this.settings.configured = true;
-            await this.finish("Vault created. First backup starting…");
+            this.renderPreferences();
           } catch (e) {
             new Notice(`⛔ ${(e as Error).message}`);
           }
@@ -247,16 +266,84 @@ export class SetupWizard extends Modal {
         b
           .setButtonText("Restore everything")
           .setCta()
-          .onClick(() => this.finish("Restoring everything…")),
+          .onClick(() => this.renderPreferences()),
       );
     new Setting(contentEl)
       .setName("Content only")
       .setDesc(
         "Just your files — leave this device's Obsidian config (.obsidian) untouched. Safest on a fresh install.",
       )
-      .addButton((b) =>
-        b.setButtonText("Content only").onClick(() => this.finish("Syncing your content…")),
+      .addButton((b) => b.setButtonText("Content only").onClick(() => this.renderPreferences()));
+  }
+
+  /** Preferences screen: triggers + deletion retention (the "pick your preferences" step). */
+  private renderPreferences(): void {
+    const { contentEl, settings } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "Preferences" });
+    contentEl.createEl("p", {
+      text: "How this device syncs. You can change all of this anytime in Settings.",
+      cls: "setting-item-description",
+    });
+
+    new Setting(contentEl)
+      .setName("Sync on startup")
+      .addToggle((t) =>
+        t.setValue(settings.syncOnStart).onChange((v) => (settings.syncOnStart = v)),
       );
+    new Setting(contentEl)
+      .setName("Sync on save (debounced)")
+      .addToggle((t) => t.setValue(settings.syncOnSave).onChange((v) => (settings.syncOnSave = v)));
+    new Setting(contentEl).setName("Periodic sync interval (seconds, 0 = off)").addText((t) =>
+      t.setValue(String(settings.syncIntervalSec)).onChange((v) => {
+        settings.syncIntervalSec = Math.max(0, parseInt(v || "0", 10) || 0);
+      }),
+    );
+
+    const days = this.controller.ready ? this.controller.retentionDays : 0;
+    let retention = days;
+    new Setting(contentEl)
+      .setName("Deleted-file retention")
+      .setDesc(
+        "Default: keep everything forever — nothing is ever purged and deleted files stay restorable. Choosing a window removes a deleted file's encrypted objects from the bucket once every device has recorded the deletion and the window has passed. Live files and their version history are never touched. Purged means unrecoverable.",
+      )
+      .addDropdown((d) => {
+        d.addOption("0", "Keep everything forever (recommended)");
+        d.addOption("14", "14 days");
+        d.addOption("30", "30 days");
+        d.addOption("90", "90 days");
+        d.setValue(String(days));
+        d.onChange((v) => (retention = parseInt(v, 10) || 0));
+      });
+
+    new Setting(contentEl).addButton((b) =>
+      b
+        .setButtonText("Continue")
+        .setCta()
+        .onClick(async () => {
+          try {
+            if (this.controller.ready && retention !== this.controller.retentionDays) {
+              await this.controller.setRetention(retention);
+            }
+            this.renderDone();
+          } catch (e) {
+            new Notice(`⛔ ${(e as Error).message}`);
+          }
+        }),
+    );
+  }
+
+  /** Final screen: short orientation (shared with the "Show tutorial" command). */
+  private renderDone(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    renderTutorialContent(contentEl);
+    new Setting(contentEl).addButton((b) =>
+      b
+        .setButtonText("Start syncing")
+        .setCta()
+        .onClick(() => void this.finish("Setup complete — first sync starting…")),
+    );
   }
 
   private async finish(msg: string): Promise<void> {

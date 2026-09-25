@@ -13,7 +13,6 @@ import type { VaultConfig } from "../types";
 import { DEFAULT_DEVICE_CONFIG_GLOBS, DEFAULT_EXCLUSION_GLOBS } from "../types";
 
 const KEYPARAMS = "meta/keyparams";
-const VERIFIER = "meta/verifier";
 const VAULTCONFIG = "meta/vaultconfig";
 
 const enc = new TextEncoder();
@@ -32,7 +31,13 @@ export function defaultVaultConfig(vaultName: string, device: string): VaultConf
     classificationOverrides: {},
     exclusionGlobs: [...DEFAULT_EXCLUSION_GLOBS],
     deviceConfigGlobs: [...DEFAULT_DEVICE_CONFIG_GLOBS],
+    retentionDays: 0, // keep everything forever — nothing is ever purged by default
   };
+}
+
+/** Fill in defaults for fields added after a config was first written. */
+export function normalizeVaultConfig(config: VaultConfig): VaultConfig {
+  return { ...config, retentionDays: config.retentionDays ?? 0 };
 }
 
 export class VaultConfigStore {
@@ -57,7 +62,8 @@ export class VaultConfigStore {
   async readConfig(manifestKey: Uint8Array): Promise<VaultConfig | null> {
     const blob = await this.backend.get(VAULTCONFIG);
     if (!blob) return null;
-    return openJson<VaultConfig>(manifestKey, blob);
+    const config = await openJson<VaultConfig>(manifestKey, blob);
+    return normalizeVaultConfig(config);
   }
 
   async writeConfig(manifestKey: Uint8Array, config: VaultConfig): Promise<void> {
@@ -73,7 +79,4 @@ export class VaultConfigStore {
     }
     return config;
   }
-
-  // exported names so other layers can reference the well-known keys
-  static readonly KEYS = { KEYPARAMS, VERIFIER, VAULTCONFIG } as const;
 }

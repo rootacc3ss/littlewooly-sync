@@ -72,6 +72,13 @@ export interface VaultConfig {
   classificationOverrides: Record<string, FileTier | "EXCLUDE">;
   exclusionGlobs: string[];
   deviceConfigGlobs: string[];
+  /**
+   * Days a tombstoned (deleted) path's objects are kept before being purged from the
+   * bucket. 0 = keep forever — the default; nothing is ever deleted. When > 0, purge
+   * only ever touches paths whose head is a tombstone on EVERY device manifest, never
+   * live files or their old versions.
+   */
+  retentionDays: number;
 }
 
 export const DEFAULT_DEVICE_CONFIG_GLOBS: string[] = [

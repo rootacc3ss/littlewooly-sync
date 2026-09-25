@@ -5,6 +5,7 @@ import { writePassphrase, writeS3Secret } from "./secrets";
 import { LwsSettingTab } from "./ui/settings-tab";
 import { SetupWizard } from "./ui/setup-wizard";
 import { StatusBar } from "./ui/status-bar";
+import { showTutorial } from "./ui/tutorial";
 import { buildDebugReport } from "./debug";
 
 export default class LittleWoolySyncPlugin extends Plugin {
@@ -33,6 +34,11 @@ export default class LittleWoolySyncPlugin extends Plugin {
     this.addCommand({ id: "lws-sync", name: "Sync now", callback: () => this.runSync() });
     this.addCommand({ id: "lws-audit", name: "Coverage audit", callback: () => this.runAudit() });
     this.addCommand({ id: "lws-repair", name: "Repair", callback: () => this.runRepair() });
+    this.addCommand({
+      id: "lws-tutorial",
+      name: "Show tutorial",
+      callback: () => showTutorial(this.app),
+    });
     this.addCommand({
       id: "lws-debug",
       name: "Write debug report",

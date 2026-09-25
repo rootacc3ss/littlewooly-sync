@@ -43,7 +43,9 @@ vault adapter, so it reads every file — hidden files included — with no Node
 
 ## Setup
 
-Enabling the plugin opens a one-screen wizard:
+**New here? Follow the [step-by-step tutorial](TUTORIAL.md)** — pick a provider, create a
+bucket, get keys, connect, verify. Otherwise, the short version — enabling the plugin
+opens a guided wizard:
 
 | Field | Notes |
 | --- | --- |
@@ -81,14 +83,33 @@ on each.
 | **Sync now** | Pull, merge, then push |
 | **Coverage audit** | Three-way diff of vault vs. manifest vs. bucket, plus size reconciliation |
 | **Repair** | Additively fix what the audit found — re-upload missing objects, rebuild the index |
+| **Show tutorial** | Short orientation: status bar, commands, next steps |
 | **Write debug report** | Dump diagnostic state to a file in your vault |
 
 Sync on startup, debounced sync on save, and a periodic interval are all toggleable in
-settings. You can also back up or restore this device's config on demand, or build a
-catch-all archive of hidden and config files.
+settings (and offered during setup). You can also back up or restore this device's config
+on demand, or build a catch-all archive of hidden and config files.
 
 **Run the coverage audit after your first full sync.** If a file did not make it, the audit
 names it — you should never have to guess whether your backup is complete.
+
+## Moving devices
+
+**Settings → Advanced → Export setup file** writes `littlewooly-sync-setup.json` to your
+vault root: connection, addressing, custom headers, and preferences. Optionally include
+your secrets — they're sealed with a one-time export passphrase (Argon2id + AES-GCM) and
+never appear in the file in plaintext. On the new device, drop the file into the vault
+root before running setup; the wizard offers to import it. The file syncs with your vault
+(encrypted like everything else) — delete it after migrating if you prefer.
+
+## Deleted files & retention
+
+**Default: nothing is ever really deleted.** Deleting a file moves it to your local trash,
+records a tombstone, and keeps every version in the bucket — restorable forever. If you
+want bounded storage, Settings (and setup) offer an optional purge window (14/30/90 days):
+once **every** device has recorded a deletion and the window has passed, that file's
+encrypted objects are removed from the bucket. Live files and their version history are
+never touched; purged means unrecoverable.
 
 ## How it works
 
@@ -107,9 +128,17 @@ names it — you should never have to guess whether your backup is complete.
   cannot break another machine's Obsidian setup.
 - **Deletes are conservative.** A file must be absent from both independent walkers across
   two separate scans before it is tombstoned, and deletions go to Obsidian's trash — you
-  decide when they are really gone.
+  decide when they are really gone (and by default, nothing is ever purged — see
+  [Deleted files & retention](#deleted-files--retention)).
 - **Conflicts are never silently dropped.** You get a conflict copy, with 3-way merge for
   JSON.
+
+## Roadmap (v2)
+
+- **Version-history browser & one-click restore** — every version already sits in the
+  bucket (objects are immutable); this is a UI over data that's already there.
+- **Multi-user vaults** — share an encrypted vault with other people (per-user keys).
+- **Live sync / background push** — near-real-time propagation between devices.
 
 ## Development
 

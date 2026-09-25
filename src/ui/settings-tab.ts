@@ -5,6 +5,8 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type LittleWoolySyncPlugin from "../main";
 import { formatHeaderLines, parseHeaderLines } from "./custom-headers";
+import { openExportSetupModal, openImportSetupModal } from "./modals";
+import { SETUP_FILE } from "../portability";
 
 export class LwsSettingTab extends PluginSettingTab {
   constructor(
@@ -101,6 +103,71 @@ export class LwsSettingTab extends PluginSettingTab {
     // ---- Advanced ----
     const adv = containerEl.createEl("details");
     adv.createEl("summary", { text: "Advanced" });
+
+    const ctl = this.plugin.controller;
+    let includeSecrets = false;
+
+    new Setting(adv)
+      .setName("Deleted-file retention")
+      .setDesc(
+        "Shared across devices. Default: keep everything forever — nothing is ever purged. A window removes a deleted file's encrypted objects once every device recorded the deletion and the window passed; live files and their history are never touched. Purged = unrecoverable.",
+      )
+      .addDropdown((d) => {
+        d.addOption("0", "Keep everything forever");
+        d.addOption("14", "14 days");
+        d.addOption("30", "30 days");
+        d.addOption("90", "90 days");
+        d.setValue(String(ctl.ready ? ctl.retentionDays : 0));
+        d.onChange(async (v) => {
+          try {
+            await ctl.setRetention(parseInt(v, 10) || 0);
+            new Notice("Retention updated (applies to every device).");
+          } catch (e) {
+            new Notice(`⛔ ${(e as Error).message}`);
+          }
+        });
+      });
+
+    new Setting(adv)
+      .setName("Include secrets in export")
+      .setDesc(
+        "Off: the setup file carries connection + preferences only. On: also the S3 secret + passphrase, encrypted with a one-time export passphrase.",
+      )
+      .addToggle((t) => t.setValue(false).onChange((v) => (includeSecrets = v)));
+
+    new Setting(adv)
+      .setName("Export setup file")
+      .setDesc(
+        `Writes ${SETUP_FILE} to the vault root — take it to a new device (it syncs with your vault, encrypted like everything else; delete it after migrating if you prefer).`,
+      )
+      .addButton((b) =>
+        b.setButtonText("Export").onClick(async () => {
+          try {
+            if (includeSecrets) {
+              openExportSetupModal(this.app, ctl);
+              return;
+            }
+            await ctl.exportSetup(false);
+            new Notice(`✅ Wrote ${SETUP_FILE} to the vault root.`);
+          } catch (e) {
+            new Notice(`⛔ ${(e as Error).message}`);
+          }
+        }),
+      );
+
+    new Setting(adv)
+      .setName("Import setup file")
+      .setDesc(
+        `Loads connection + preferences from ${SETUP_FILE} in the vault root, then re-run setup to connect.`,
+      )
+      .addButton((b) =>
+        b.setButtonText("Import").onClick(() =>
+          openImportSetupModal(this.app, ctl, () => {
+            new Notice("Imported — run setup to connect with these settings.");
+            this.plugin.openSetupWizard();
+          }),
+        ),
+      );
 
     new Setting(adv)
       .setName("Back up this device's config now")

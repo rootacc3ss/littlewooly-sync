@@ -107,4 +107,12 @@ export class ObjectStore {
     }
     return out;
   }
+
+  /**
+   * Delete an object by its content key (retention purge). Only ever called with keys
+   * the purge collector proved unreferenced by any live head.
+   */
+  async deleteObjectByKey(objectKey: string): Promise<void> {
+    await this.backend.delete(objectPath(objectKey));
+  }
 }
